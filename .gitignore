@@ -1,0 +1,13 @@
+# ROS build folders
+build/
+install/
+log/
+
+# Ignore python cache and compiled files
+__pycache__/
+*.pyc
+*.pyo
+
+# Ignore backup files
+*~
+*.swp

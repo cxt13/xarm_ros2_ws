@@ -1,0 +1,20 @@
+parameters:
+  name: hand_eye_calibration
+  calibration_type: eye_in_hand
+  robot_base_frame: link_base
+  robot_effector_frame: link_eef
+  tracking_base_frame: camera_color_optical_frame
+  tracking_marker_frame: camera_marker
+  freehand_robot_movement: true
+  move_group_namespace: /
+  move_group: manipulator
+transform:
+  translation:
+    x: 0.06978035792908464
+    y: 0.035818571378670123
+    z: 0.01679021439600517
+  rotation:
+    x: -0.002053764557758081
+    y: 0.008549615327250404
+    z: -0.7181193669041934
+    w: 0.6958643984326385
