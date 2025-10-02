@@ -65,7 +65,7 @@ def generate_launch_description():
                 name='foundationpose_grasp_bridge',
                 output='screen',
                 parameters=[{
-                    'foundationpose_topics': ['/Current_OBJ_position_1', '/Current_OBJ_position_2', '/Current_OBJ_position_3','/Current_OBJ_position_4'],
+                    'foundationpose_topics': ['/Current_OBJ_position_1', '/Current_OBJ_position_2', '/Current_OBJ_position_3'],
                     'n_samples': 20,
                     'robot_base_frame': 'link_base',
                     'robot_ip': robot_ip,
