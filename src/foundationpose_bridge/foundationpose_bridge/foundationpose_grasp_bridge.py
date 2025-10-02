@@ -48,7 +48,7 @@ class FoundationPoseGraspBridge(Node):
 
         # Declare and get parameters
         self.declare_parameter('foundationpose_topics', ['/Current_OBJ_position_1', '/Current_OBJ_position_2', '/Current_OBJ_position_3'])
-        self.declare_parameter('n_samples', 10)
+        self.declare_parameter('n_samples', 20)
         self.declare_parameter('robot_base_frame', 'link_base')
         self.foundationpose_topics = self.get_parameter('foundationpose_topics').get_parameter_value().string_array_value
         self.n_samples = self.get_parameter('n_samples').get_parameter_value().integer_value
@@ -80,14 +80,7 @@ class FoundationPoseGraspBridge(Node):
             )
             self.get_logger().info(f"Subscribed to '{topic}' for Object ID {object_id}")
 
-        # --- EDITED SECTION ---
-        # Instead of calling your main loop directly (which blocks),
-        # we create a one-shot timer to start your async logic.
-        # This allows the node to finish initializing properly.
-        self.create_timer(0.1, self.start_main_async_loop)
-        self.get_logger().info("Node initialization complete. Main async loop will start shortly.")
-
-        # This is the callback for our one-shot timer
+         #for our one-shot timer
 
     async def start_main_async_loop(self):
         # The timer is only needed to kick off the async function.
@@ -106,30 +99,7 @@ class FoundationPoseGraspBridge(Node):
             else:
                 self.get_logger().warn(f"Robot is in error state! Code: {msg.err}")
 
-    # The async initialization function from the previous step
-    # async def start_main_async_loop(self):
-    #     # The timer is only needed to kick off the async function.
-    #     # We can cancel it immediately so it only runs once.
-    #     self.create_timer(0.1, self.start_main_async_loop).cancel()
-        
-    #     await self.robot_setup_and_main_loop()
-    # async def initialize_robot(self):
-    #         """Waits for services, enables motion, and sets mode/state."""
-    #     self.get_logger().info("Waiting for xArm services to be ready...")
-        
-    #     # This is the new, correct place for your "wait_for_servers" logic
 
-    #     if not self.motion_enable_client.wait_for_service(timeout_sec=10.0):
-    #         self.get_logger().error("Service /xarm/motion_enable not available.")
-    #         return False
-    #     if not self.set_mode_client.wait_for_service(timeout_sec=5.0):
-    #         self.get_logger().error("Service /xarm/set_mode not available.")
-    #         return False
-    #     if not self.set_state_client.wait_for_service(timeout_sec=5.0):
-    #         self.get_logger().error("Service /xarm/set_state not available.")
-    #         return False
-            
-    #     self.get_logger().info("Services are available. Initializing robot...")
     def initialize_robot_and_start(self):
         # This timer is only needed to kick things off, so we cancel it immediately
         # You might want to assign it to a variable to avoid creating a new one on each call if this is called multiple times
@@ -186,21 +156,21 @@ class FoundationPoseGraspBridge(Node):
         # 3. Open the gripper (using an action)
         self.get_logger().info("Opening gripper...")
         gripper_goal = GripperCommand.Goal()
-        gripper_goal.command.position = 0.850 # Fully open for xArm gripper
+        gripper_goal.command.position = GRIPPER_OPEN_METERS # Fully open for xArm gripper
         # Note: Actions are non-blocking by default, we just send the goal
         self.gripper_action_client.send_goal_async(gripper_goal)
         # You could wait for the result here if needed, but for setup it's often fine to continue
 
         # 4. Move to a safe starting position
         # Make sure you have SAFE_TRAVEL_POSE defined somewhere, e.g., in __init__
-        # self.SAFE_TRAVEL_POSE = [200.0, 0.0, 250.0, 3.14, 0.0, 0.0] # [x,y,z,roll,pitch,yaw] in mm and rad
-        self.get_logger().info(f"Moving to SAFE_TRAVEL_POSE: {self.SAFE_TRAVEL_POSE}...")
+        # SAFE_TRAVEL_POSE = [200.0, 0.0, 250.0, 3.14, 0.0, 0.0] # [x,y,z,roll,pitch,yaw] in mm and rad
+        self.get_logger().info(f"Moving to SAFE_TRAVEL_POSE: {SAFE_TRAVEL_POSE}...")
         move_req = MoveCartesian.Request()
-        move_req.pose = [float(p) for p in self.SAFE_TRAVEL_POSE]
+        move_req.pose = [float(p) for p in SAFE_TRAVEL_POSE]
         move_req.speed = 100.0  # mm/s
         move_req.acc = 20.0    # mm/s^2
         move_req.wait = True 
-        request.wait = wait # Important: Tell the driver to wait for completion
+         # Important: Tell the driver to wait for completion
         # IMPORTANT: This makes the service call block until the move is done
         
         future = self.move_line_client.call_async(move_req)
@@ -270,6 +240,8 @@ class FoundationPoseGraspBridge(Node):
             self.object_samples[object_id] = []
 
     def process_and_transform_pose(self, object_id):
+        graspable_object_found = False
+     #  # make sure this method exists
         avg_pose = self.average_poses(self.object_samples[object_id])
         if not avg_pose: return
 
@@ -287,8 +259,13 @@ class FoundationPoseGraspBridge(Node):
                 self.target_grasp_pose = base_frame_pose_stamped
             else:
                 self.get_logger().warning(f"❌ Object ID {object_id} is NOT graspable (bad roll angle).")
+                #self.get_logger().info(f"Object {object_id}: roll angle = {math.degrees(roll_angle):.2f} deg")
         except TransformException as ex:
             self.get_logger().error(f"Could not transform pose: {ex}")
+
+        if not graspable_object_found:
+            self.get_logger().warn("⚠️ No graspable object found in scene. Retrying or skipping...")
+
 
     def average_poses(self, poses):
         if not poses: return None
@@ -319,7 +296,7 @@ class FoundationPoseGraspBridge(Node):
         self.get_logger().info(f"Service '{service_name}' call successful.")
         return future.result()
     
-    # --- UPDATED ---
+    
     def move_robot_line(self, pose_in_meters):
         """Converts pose from meters to mm and sends it to the robot."""
         # Convert position from meters to millimeters for the xArm driver
@@ -340,6 +317,15 @@ class FoundationPoseGraspBridge(Node):
 
     def move_gripper(self, width_meters):
         self.get_logger().info(f"Sending gripper goal: open to {width_meters * 1000:.1f} mm...")
+        goal_msg = GripperCommand.Goal()
+        goal_msg.command.position = width_meters
+        goal_msg.command.max_effort = 100.0
+        future = self.gripper_action_client.send_goal_async(goal_msg)
+        rclpy.spin_until_future_complete(self, future)
+        if future.result() is None:
+            self.get_logger().error("Gripper action failed or timed out.")
+        else:
+            self.get_logger().info("Gripper goal sent successfully.")
         goal_msg = GripperCommand.Goal()
         goal_msg.command.position = width_meters
         goal_msg.command.max_effort = 100.0
@@ -369,12 +355,15 @@ class FoundationPoseGraspBridge(Node):
         pre_grasp_pose = [pose_in_meters[0] + config['x_offset'], pose_in_meters[1] + config['y_offset'], pose_in_meters[2] + config['z_pre_grasp'], pose_in_meters[3], pose_in_meters[4], pose_in_meters[5]]
         grasp_pose = [pose_in_meters[0] + config['x_offset'], pose_in_meters[1] + config['y_offset'], pose_in_meters[2] + config['z_grasp'], pose_in_meters[3], pose_in_meters[4], pose_in_meters[5]]
         
-        # --- UPDATED ---
+        
         # Abort sequence if any move fails
         if not self.move_robot_line(PARALLEL_POSE):
+
+
             self.get_logger().error("Aborting grasp: Failed to move to PARALLEL_POSE.")
             with self.state_lock: self.robot_is_moving = False
             return
+
 
         if not self.move_robot_line(pre_grasp_pose):
             self.get_logger().error("Aborting grasp: Failed to move to pre_grasp_pose.")
