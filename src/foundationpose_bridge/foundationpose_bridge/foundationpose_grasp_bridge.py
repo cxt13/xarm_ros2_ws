@@ -224,7 +224,7 @@ class FoundationPoseGraspBridge(Node):
         sequence = [
             ("Opening gripper before approach", lambda: self.move_gripper(GRIPPER_OPEN_METERS)),
             ("Moving to pre-grasp pose", lambda: self.move_robot_line(pre_grasp_pose)),
-            ("Moving to grasp pose", lambda: self.move_robot_line(grasp_pose, speed=30.0)),
+            ("Moving to grasp pose", lambda: self.move_robot_line(grasp_pose, speed=0.1)),
             ("Closing gripper", lambda: self.move_gripper(config['gripper_width'])),
             ("Retreating to pre-grasp pose", lambda: self.move_robot_line(pre_grasp_pose)),
             ("Moving to drop-off pre-pose", lambda: self.move_robot_line(DROP_BOX_PRE_POSE)),
