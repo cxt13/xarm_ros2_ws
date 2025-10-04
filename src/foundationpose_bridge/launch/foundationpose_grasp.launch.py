@@ -15,6 +15,7 @@ def generate_launch_description():
         package='tf2_ros',
         executable='static_transform_publisher',
         name='static_camera_tf_publisher',
+        
         # Arguments are: x y z qx qy qz qw parent_frame child_frame
         arguments=[
             '0.06978', '0.03581', '0.01679',      # Translation (x, y, z)

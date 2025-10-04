@@ -17,9 +17,9 @@ from threading import Lock, Thread
 from rclpy.executors import MultiThreadedExecutor ## --- FIX ---: Import the executor
 
 # Constants for robot positions (in meters and radians)
-SAFE_TRAVEL_POSE = [0.1835, 0.002, 0.444, math.radians(180.0), 0.0, 0.0]
-INSPECTION_POSE = [0.472, 0.0, 0.360, math.radians(180.0), 0.0, 0.0]
-PARALLEL_POSE = [0.472, 0.0, 0.360, math.radians(180.0), 0.0, 0.0] # Often same as inspection
+SAFE_TRAVEL_POSE = [0.365, -0.164, 0.175, 3.142, 0.000, 0.677]
+INSPECTION_POSE = [0.008, 0.0, 0.331, math.radians(-180.0), math.radians(-30.9), 0.0]
+PARALLEL_POSE = [0.008, 0.0, 0.331, math.radians(-180.0), math.radians(-30.9), 0.0] # Often same as inspection
 DROP_BOX_PRE_POSE = [0.0174, -0.2312, 0.426, math.pi, -math.radians(1.0), -math.radians(85.7)]
 DROP_BOX_POSE = [0.0174, -0.2312, 0.208, math.pi, -math.radians(1.0), -math.radians(85.7)]
 
@@ -137,9 +137,13 @@ class FoundationPoseGraspBridge(Node):
     def is_graspable(self, pose_msg):
         q = pose_msg.orientation
         _, pitch, roll = R.from_quat([q.x, q.y, q.z, q.w]).as_euler('zyx', degrees=True)
-        return abs(pitch) < 45 and abs(roll) < 45
+        #return abs(pitch) < 45 and abs(roll) < 45
+        # Allows for up to +/- 90 degree tilts on both axes
+        #return abs(pitch) < 90 and abs(roll) < 90
+        # Only checks the roll angle, ignores pitch
+        return abs(roll) < 45
 
-    def call_service(self, client, request, service_name, timeout=15.0):
+    def call_service(self, client, request, service_name, timeout=20.0):
         if not client.wait_for_service(timeout_sec=5.0):
             self.get_logger().error(f"Service '{service_name}' not available. Aborting call.")
             return None
