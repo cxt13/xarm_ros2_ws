@@ -7,7 +7,7 @@ import tf2_ros
 import time
 from tf2_ros import TransformException
 from tf2_geometry_msgs import do_transform_pose
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped , PoseArray
 from xarm_msgs.srv import SetInt16, SetInt16ById, MoveCartesian
 from rclpy.action import ActionClient 
 from rclpy.duration import Duration
@@ -15,7 +15,9 @@ from control_msgs.action import GripperCommand
 from xarm_msgs.msg import RobotMsg
 from scipy.spatial.transform import Rotation as R
 from threading import Lock, Thread
-from rclpy.executors import MultiThreadedExecutor ## --- FIX ---: Import the executor
+from rclpy.executors import MultiThreadedExecutor 
+
+from tf_transformations import quaternion_multiply, quaternion_from_euler
 
 # Constants for robot positions (in meters and radians)
 SAFE_TRAVEL_POSE = [0.365, -0.164, 0.175, 3.142, 0.000, 0.677]
@@ -43,6 +45,7 @@ class FoundationPoseGraspBridge(Node):
     def __init__(self):
         super().__init__('foundationpose_grasp_bridge')
         self.get_logger().info("🚀 Initializing FoundationPose Grasp Bridge...")
+
 
         # Declare and get parameters
         self.declare_parameter('foundationpose_topics', ['/Current_OBJ_position_1', '/Current_OBJ_position_2', '/Current_OBJ_position_3'])
@@ -78,6 +81,37 @@ class FoundationPoseGraspBridge(Node):
             )
             self.get_logger().info(f"Subscribed to '{topic}' for Object ID {object_id}")
 
+        self.pa_pub = self.create_publisher(PoseArray, '/aggregated_poses', 10)
+
+        # 2) Subscribers for each object pose topic
+        self.current_poses = {}  # object_id → latest PoseStamped
+        self.subs = []
+        for obj_id in [1, 2, 3]:  # update with your real IDs
+            topic = f'/Current_OBJ_position_{obj_id}'
+            cb = lambda msg, id=obj_id: self.pose_cb(msg, id)
+            self.subs.append(self.create_subscription(PoseStamped, topic, cb, 10))
+
+        # 3) Timer to republish the PoseArray at 10 Hz
+        self.create_timer(0.1, self.publish_array)
+
+    def pose_cb(self, msg: PoseStamped, object_id: int):
+        # store the most recent pose for each object
+        self.current_poses[object_id] = msg
+
+    def publish_array(self):
+        if not self.current_poses:
+            return  # nothing to publish yet
+
+        pa = PoseArray()
+        # stamp and frame must match your poses
+        first = next(iter(self.current_poses.values()))
+        pa.header.frame_id = first.header.frame_id
+        pa.header.stamp = first.header.stamp
+
+        # fill the array with the latest poses
+        pa.poses = [ps.pose for ps in self.current_poses.values()]
+        self.pa_pub.publish(pa)
+
     def robot_state_callback(self, msg: RobotMsg):
         with self.state_lock:
             if msg.err != 0:
@@ -112,31 +146,49 @@ class FoundationPoseGraspBridge(Node):
             self.process_and_transform_pose(object_id)
             self.object_samples[object_id].clear()
 
+
     def process_and_transform_pose(self, object_id):
         avg_pose = self.average_poses(self.object_samples[object_id])
         if not avg_pose:
             return
+
         try:
+            now = self.get_clock().now()
             transform = self.tf_buffer.lookup_transform(
-                self.robot_base_frame, avg_pose.header.frame_id, rclpy.time.Time()
+                self.robot_base_frame, avg_pose.header.frame_id, now
             )
+
             stamped = PoseStamped()
             stamped.header = avg_pose.header
             stamped.pose = avg_pose.pose
-            pose_in_base_frame_stamped = do_transform_pose(stamped, transform)
-            pose_in_base_frame = pose_in_base_frame_stamped.pose
-            if self.is_graspable(pose_in_base_frame):
-                self.get_logger().info(f"✅ Object ID {object_id} is graspable. Locking as target.")
+
+            transformed_pose = do_transform_pose(stamped.pose, transform)
+            pose_in_base_frame_stamped = PoseStamped()
+            pose_in_base_frame_stamped.header.frame_id = transform.header.frame_id
+            pose_in_base_frame_stamped.header.stamp = transform.header.stamp
+            pose_in_base_frame_stamped.pose = transformed_pose
+
+            if self.is_graspable(transformed_pose):
+                self.get_logger().info(f"✅ Object ID {object_id} is graspable.")
                 base_frame_pose_stamped = PoseStamped()
                 base_frame_pose_stamped.header.frame_id = self.robot_base_frame
-                base_frame_pose_stamped.pose = pose_in_base_frame
+                base_frame_pose_stamped.header.stamp = pose_in_base_frame_stamped.header.stamp
+                base_frame_pose_stamped.pose = transformed_pose
+
                 with self.state_lock:
                     self.target_grasp_pose = base_frame_pose_stamped
                 return
             else:
-                self.get_logger().warning(f"❌ Object ID {object_id} is NOT graspable (bad roll angle).")
+                self.get_logger().warning(
+                    f"❌ Object ID {object_id} is NOT graspable (bad roll angle)."
+                )
+
         except TransformException as ex:
-            self.get_logger().error(f"Could not transform pose for object {object_id}: {ex}")
+            self.get_logger().error(
+                f"Could not transform pose for object {object_id}: {ex}"
+            )
+
+
 
 
     def average_poses(self, poses):
