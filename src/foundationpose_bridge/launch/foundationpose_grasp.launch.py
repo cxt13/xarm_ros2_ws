@@ -7,25 +7,20 @@ from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 
 def generate_launch_description():
-
-    # This node publishes the static transform for your EYE-IN-HAND setup.
-    # It connects the robot's end-effector to the camera.
-    # The values are taken directly from your hand_eye_calibration.yaml file.
+    # 1) Static TF: end-effector → camera (from hand_eye_calibration.yaml)
     static_tf_publisher = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
         name='static_camera_tf_publisher',
-        
-        # Arguments are: x y z qx qy qz qw parent_frame child_frame
         arguments=[
-            '0.06978', '0.03581', '0.01679',      # Translation (x, y, z)
-            '-0.00205', '0.00854', '-0.71811', '0.69586', # Rotation (qx, qy, qz, qw)
-            'link_eef',                           # Parent Frame: The robot's end-effector
-            'camera_color_optical_frame'          # Child Frame: The camera
+            '0.06978', '0.03581', '0.01679',        # translation (x y z)
+            '-0.00205', '0.00854', '-0.71811', '0.69586',  # rotation (qx qy qz qw)
+            'link_eef',                              # parent_frame  
+            'camera_color_optical_frame'             # child_frame
         ]
     )
 
-    # --- Robot-Specific Parameters ---
+    # 2) Robot IP argument for xArm driver
     robot_ip_arg = DeclareLaunchArgument(
         'robot_ip',
         default_value='192.168.1.223',
@@ -33,30 +28,32 @@ def generate_launch_description():
     )
     robot_ip = LaunchConfiguration('robot_ip')
 
-    # --- NEW: Define the path to your calibration file ---
+    # 3) Hand–eye calibration YAML path
     calibration_file_path = os.path.join(
         get_package_share_directory('foundationpose_bridge'),
         'config',
         'hand_eye_calibration.yaml'
     )
 
-
-
-    # --- Launch the xArm Hardware Driver and API ---
+    # 4) Launch the xArm hardware driver & API
     xarm_api_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            os.path.join(get_package_share_directory('xarm_api'), 'launch', 'xarm5_driver.launch.py')
+            os.path.join(
+                get_package_share_directory('xarm_api'),
+                'launch',
+                'xarm5_driver.launch.py'
+            )
         ),
         launch_arguments={
-            'robot_ip': robot_ip,
-            'report_type': 'rich',
-            'dof': '5',
-            'hw_ns': 'xarm',
-            'add_gripper': 'true',
+            'robot_ip':     robot_ip,
+            'report_type':  'rich',
+            'dof':          '5',
+            'hw_ns':        'xarm',
+            'add_gripper':  'true',
         }.items()
     )
 
-    # --- Launch Your Bridge Node (with a delay) ---
+    # 5) Delay the bridge node until the hardware driver is up
     delayed_bridge_node = TimerAction(
         period=15.0,
         actions=[
@@ -65,12 +62,22 @@ def generate_launch_description():
                 executable='foundationpose_grasp_bridge',
                 name='foundationpose_grasp_bridge',
                 output='screen',
+                remappings=[
+                    ('/xarm_gripper/gripper_action', '/xarm_driver/gripper_action'),
+                ],
                 parameters=[{
-                    'foundationpose_topics': ['/Current_OBJ_position_1', '/Current_OBJ_position_2', '/Current_OBJ_position_3'],
-                    'n_samples': 20,
-                    'robot_base_frame': 'link_base',
-                    'robot_ip': robot_ip,
-                    # --- NEW: Add the calibration file path to the parameters ---
+                    # exactly these three FoundationPose topics:
+                    'foundationpose_topics': [
+                        '/Current_OBJ_position_1',
+                        '/Current_OBJ_position_2',
+                        '/Current_OBJ_position_3'
+                    ],
+                    'n_samples':             20,
+                    # must match your robot’s TF frame
+                    'robot_base_frame':      'link_base',
+                    # pass through the robot_ip arg
+                    'robot_ip':              robot_ip,
+                    # hand–eye calibration file location
                     'calibration_file_path': calibration_file_path
                 }]
             )

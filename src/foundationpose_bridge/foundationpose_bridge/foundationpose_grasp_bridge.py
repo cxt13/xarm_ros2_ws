@@ -9,7 +9,8 @@ from tf2_ros import TransformException
 from tf2_geometry_msgs import do_transform_pose
 from geometry_msgs.msg import PoseStamped
 from xarm_msgs.srv import SetInt16, SetInt16ById, MoveCartesian
-from rclpy.action import ActionClient
+from rclpy.action import ActionClient 
+from rclpy.duration import Duration
 from control_msgs.action import GripperCommand
 from xarm_msgs.msg import RobotMsg
 from scipy.spatial.transform import Rotation as R
@@ -82,7 +83,22 @@ class FoundationPoseGraspBridge(Node):
             if msg.err != 0:
                 self.get_logger().warn(f"Robot is in error state! Code: {msg.err}")
 
+
     def pose_callback(self, msg, object_id):
+        # 0) Ensure the needed transform is available (200 ms timeout)
+        try:
+            self.tf_buffer.lookup_transform(
+                self.robot_base_frame,       # target frame
+                msg.header.frame_id,         # source frame
+                msg.header.stamp,            # at the message time
+                timeout=Duration(seconds=0.2)
+            )
+        except TransformException as e:
+            self.get_logger().warn(
+                f"TF not yet available for frame '{msg.header.frame_id}': {e}"
+            )
+            return
+
         with self.state_lock:
             if self.robot_is_moving or self.target_grasp_pose is not None:
                 return
@@ -100,27 +116,28 @@ class FoundationPoseGraspBridge(Node):
         avg_pose = self.average_poses(self.object_samples[object_id])
         if not avg_pose:
             return
-
         try:
             transform = self.tf_buffer.lookup_transform(
                 self.robot_base_frame, avg_pose.header.frame_id, rclpy.time.Time()
             )
-            pose_in_base_frame = do_transform_pose(avg_pose.pose, transform)
-
+            stamped = PoseStamped()
+            stamped.header = avg_pose.header
+            stamped.pose = avg_pose.pose
+            pose_in_base_frame_stamped = do_transform_pose(stamped, transform)
+            pose_in_base_frame = pose_in_base_frame_stamped.pose
             if self.is_graspable(pose_in_base_frame):
                 self.get_logger().info(f"✅ Object ID {object_id} is graspable. Locking as target.")
                 base_frame_pose_stamped = PoseStamped()
                 base_frame_pose_stamped.header.frame_id = self.robot_base_frame
                 base_frame_pose_stamped.pose = pose_in_base_frame
-
                 with self.state_lock:
                     self.target_grasp_pose = base_frame_pose_stamped
                 return
             else:
                 self.get_logger().warning(f"❌ Object ID {object_id} is NOT graspable (bad roll angle).")
-
         except TransformException as ex:
             self.get_logger().error(f"Could not transform pose for object {object_id}: {ex}")
+
 
     def average_poses(self, poses):
         if not poses: return None
@@ -136,12 +153,9 @@ class FoundationPoseGraspBridge(Node):
 
     def is_graspable(self, pose_msg):
         q = pose_msg.orientation
-        _, pitch, roll = R.from_quat([q.x, q.y, q.z, q.w]).as_euler('zyx', degrees=True)
-        #return abs(pitch) < 45 and abs(roll) < 45
-        # Allows for up to +/- 90 degree tilts on both axes
-        #return abs(pitch) < 90 and abs(roll) < 90
-        # Only checks the roll angle, ignores pitch
-        return abs(roll) < 45
+        yaw, pitch, roll = R.from_quat([q.x, q.y, q.z, q.w]).as_euler('zyx', degrees=True)
+        return abs(pitch) < 60 and abs(roll) < 45
+
 
     def call_service(self, client, request, service_name, timeout=20.0):
         if not client.wait_for_service(timeout_sec=5.0):
