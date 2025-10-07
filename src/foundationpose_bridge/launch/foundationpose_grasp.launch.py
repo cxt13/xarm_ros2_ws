@@ -13,10 +13,9 @@ def generate_launch_description():
         executable='static_transform_publisher',
         name='static_camera_tf_publisher',
         arguments=[
-            '0.06978', '0.03581', '0.01679',        # translation (x y z)
-            '-0.00205', '0.00854', '-0.71811', '0.69586',  # rotation (qx qy qz qw)
-            'link_eef',                              # parent_frame  
-            'camera_color_optical_frame'             # child_frame
+            '0.06978035792908464', '0.035818571378670123', '0.01679021439600517',
+            '-0.002053764557758081', '0.008549615327250404', '-0.7181193669041934', '0.6958643984326385',
+            'camera_color_optical_frame', 'link_eef'
         ]
     )
 

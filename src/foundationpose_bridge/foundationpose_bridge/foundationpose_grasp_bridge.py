@@ -21,10 +21,14 @@ from tf_transformations import quaternion_multiply, quaternion_from_euler
 
 # Constants for robot positions (in meters and radians)
 SAFE_TRAVEL_POSE = [0.365, -0.164, 0.175, 3.142, 0.000, 0.677]
-INSPECTION_POSE = [0.008, 0.0, 0.331, math.radians(-180.0), math.radians(-30.9), 0.0]
-PARALLEL_POSE = [0.008, 0.0, 0.331, math.radians(-180.0), math.radians(-30.9), 0.0] # Often same as inspection
-DROP_BOX_PRE_POSE = [0.0174, -0.2312, 0.426, math.pi, -math.radians(1.0), -math.radians(85.7)]
-DROP_BOX_POSE = [0.0174, -0.2312, 0.208, math.pi, -math.radians(1.0), -math.radians(85.7)]
+# INSPECTION_POSE = [0.008, 0.0, 0.331, math.radians(-180.0), math.radians(-30.9), 0.0]
+# PARALLEL_POSE = [0.008, 0.0, 0.331, math.radians(-180.0), math.radians(-30.9), 0.0]
+INSPECTION_POSITION = [ 0.100155762, -0.017557951, 0.319199799, 3.048767003, -0.504771996, 0.016627996 ]
+PARALLEL_POSITION   = [ 0.298326263, -0.043865643, 0.403236969, -3.121592654, -0.000306009, -0.709524006 ]
+# DROP_BOX_PRE_POSE = [0.0174, -0.2312, 0.426, math.pi, -math.radians(1.0), -math.radians(85.7)]
+# DROP_BOX_POSE = [0.0174, -0.2312, 0.208, math.pi, -math.radians(1.0), -math.radians(85.7)]
+DROP_BOX_PRE_POSE = [ 0.002136130, -0.244775543, 0.229525467, 3.121592654, -0.113416993, -1.539234002 ]
+DROP_BOX_POSE = [ 0.016955828, -0.346687164, 0.172459763, 3.121592654, -0.099458006, -1.499124992 ]
 
 # Gripper positions IN METERS
 GRIPPER_OPEN_METERS = 0.085
@@ -153,10 +157,21 @@ class FoundationPoseGraspBridge(Node):
             return
 
         try:
-            now = self.get_clock().now()
-            transform = self.tf_buffer.lookup_transform(
-                self.robot_base_frame, avg_pose.header.frame_id, now
+            # now = self.get_clock().now()
+            # transform = self.tf_buffer.lookup_transform(
+            #     self.robot_base_frame, avg_pose.header.frame_id, now
+            # )
+            requested_time = avg_pose.header.stamp  # keep your original time
+            tol = Duration(seconds=0.1)             # 100 ms tolerance
+            transform = self.tf_buffer.lookup_transform_full(
+                self.robot_base_frame,
+                rclpy.time.Time(),         # target time = latest
+                avg_pose.header.frame_id,
+                requested_time,
+                self.robot_base_frame,     # fixed frame
+                tol
             )
+
 
             stamped = PoseStamped()
             stamped.header = avg_pose.header
