@@ -2,9 +2,11 @@
 
 import math
 import rclpy
+import numpy as np
 from rclpy.node import Node
 import tf2_ros
 import time
+from rclpy.time import Time
 from tf2_ros import TransformException
 from tf2_geometry_msgs import do_transform_pose
 from geometry_msgs.msg import PoseStamped , PoseArray
@@ -21,18 +23,15 @@ from tf_transformations import quaternion_multiply, quaternion_from_euler
 
 # Constants for robot positions (in meters and radians)
 SAFE_TRAVEL_POSE = [0.365, -0.164, 0.175, 3.142, 0.000, 0.677]
-# INSPECTION_POSE = [0.008, 0.0, 0.331, math.radians(-180.0), math.radians(-30.9), 0.0]
-# PARALLEL_POSE = [0.008, 0.0, 0.331, math.radians(-180.0), math.radians(-30.9), 0.0]
-INSPECTION_POSITION = [ 0.100155762, -0.017557951, 0.319199799, 3.048767003, -0.504771996, 0.016627996 ]
-PARALLEL_POSITION   = [ 0.298326263, -0.043865643, 0.403236969, -3.121592654, -0.000306009, -0.709524006 ]
-# DROP_BOX_PRE_POSE = [0.0174, -0.2312, 0.426, math.pi, -math.radians(1.0), -math.radians(85.7)]
-# DROP_BOX_POSE = [0.0174, -0.2312, 0.208, math.pi, -math.radians(1.0), -math.radians(85.7)]
+INSPECTION_POSE = [ 0.100155762, -0.017557951, 0.319199799, 3.048767003, -0.504771996, 0.016627996 ]
+PARALLEL_POSE   = [ 0.298326263, -0.043865643, 0.403236969, -3.121592654, -0.000306009, -0.709524006 ]
 DROP_BOX_PRE_POSE = [ 0.002136130, -0.244775543, 0.229525467, 3.121592654, -0.113416993, -1.539234002 ]
 DROP_BOX_POSE = [ 0.016955828, -0.346687164, 0.172459763, 3.121592654, -0.099458006, -1.499124992 ]
 
 # Gripper positions IN METERS
 GRIPPER_OPEN_METERS = 0.085
 GRIPPER_CLOSE_METERS = 0.046
+
 
 # Object-specific grasp configurations
 OBJ_CONFIGS = {
@@ -67,6 +66,8 @@ class FoundationPoseGraspBridge(Node):
         self.state_lock = Lock()
         self.target_grasp_pose = None
 
+
+
         # Create clients and actions
         self.get_logger().info("Connecting to xArm services and actions...")
         self.motion_enable_client = self.create_client(SetInt16ById, "/xarm/motion_enable")
@@ -98,6 +99,40 @@ class FoundationPoseGraspBridge(Node):
         # 3) Timer to republish the PoseArray at 10 Hz
         self.create_timer(0.1, self.publish_array)
 
+    def _stop_and_capture(self, samples: int = None, settle_secs: float = 0.2, inter_frame_s: float = 0.02):
+        if samples is None:
+            samples = self.n_samples
+        # Best-effort stop; replace with your controller API if different
+        try:
+            self.controller.stop_motion()
+        except Exception:
+            try:
+                self.controller.set_joint_velocity([0.0] * getattr(self.controller, 'n_joints', 5))
+            except Exception:
+                self.get_logger().warn("_stop_and_capture: controller stop attempt failed")
+        import time
+        self.get_logger().info(f"_stop_and_capture: waiting {settle_secs}s for robot to settle")
+        time.sleep(settle_secs)
+
+        frames = []
+        for _ in range(samples):
+            try:
+                frames.append(self.detection_buffer.get_latest())
+            except Exception:
+                frames.append(None)
+            time.sleep(inter_frame_s)
+        return frames
+
+
+    def _lookup_latest_transform(self, target_frame: str, source_frame: str, timeout_s: float = 0.5):
+        now_zero = Time()  # request latest available transform
+        timeout = Duration(seconds=timeout_s)
+        if not self.tf_buffer.can_transform(target_frame, source_frame, now_zero, timeout=timeout):
+            raise RuntimeError(f"cannot transform {source_frame} -> {target_frame} within {timeout_s}s")
+        return self.tf_buffer.lookup_transform(target_frame, source_frame, now_zero, timeout=timeout)
+
+
+
     def pose_cb(self, msg: PoseStamped, object_id: int):
         # store the most recent pose for each object
         self.current_poses[object_id] = msg
@@ -124,18 +159,25 @@ class FoundationPoseGraspBridge(Node):
 
     def pose_callback(self, msg, object_id):
         # 0) Ensure the needed transform is available (200 ms timeout)
+        # try:
+        #     self.tf_buffer.lookup_transform(
+        #         self.robot_base_frame,       # target frame
+        #         msg.header.frame_id,         # source frame
+        #         msg.header.stamp,            # at the message time
+        #         timeout=Duration(seconds=0.2)
+        #     )
+        # except TransformException as e:
+        #     self.get_logger().warn(
+        #         f"TF not yet available for frame '{msg.header.frame_id}': {e}"
+        #     )
+        #     return
         try:
-            self.tf_buffer.lookup_transform(
-                self.robot_base_frame,       # target frame
-                msg.header.frame_id,         # source frame
-                msg.header.stamp,            # at the message time
-                timeout=Duration(seconds=0.2)
-            )
-        except TransformException as e:
-            self.get_logger().warn(
-                f"TF not yet available for frame '{msg.header.frame_id}': {e}"
-            )
+            # ask for the latest transform; safe short timeout
+            self._lookup_latest_transform(self.robot_base_frame, msg.header.frame_id, timeout_s=0.2)
+        except Exception as e:
+            self.get_logger().warn(f"TF not yet available for frame '{msg.header.frame_id}': {e}")
             return
+
 
         with self.state_lock:
             if self.robot_is_moving or self.target_grasp_pose is not None:
@@ -151,77 +193,188 @@ class FoundationPoseGraspBridge(Node):
             self.object_samples[object_id].clear()
 
 
+    #def process_and_transform_pose(self, object_id):
+        # avg_pose = self.average_poses(self.object_samples[object_id])
+        # if not avg_pose:
+        #     return
+
+        # try:
+        #     now = self.get_clock().now()
+        #     transform = self.tf_buffer.lookup_transform(
+        #         self.robot_base_frame, avg_pose.header.frame_id, now
+        #     )
+        #     requested_time = avg_pose.header.stamp  # keep your original time
+        #     tol = Duration(seconds=0.1)             # 100 ms tolerance
+        #     transform = self.tf_buffer.lookup_transform_full(
+        #         self.robot_base_frame,
+        #         rclpy.time.Time(),         # target time = latest
+        #         avg_pose.header.frame_id,
+        #         requested_time,
+        #         self.robot_base_frame,     # fixed frame
+        #         tol
+        #     )
+
+
+        #     stamped = PoseStamped()
+        #     stamped.header = avg_pose.header
+        #     stamped.pose = avg_pose.pose
+
+        #     transformed_pose = do_transform_pose(stamped.pose, transform)
+        #     pose_in_base_frame_stamped = PoseStamped()
+        #     pose_in_base_frame_stamped.header.frame_id = transform.header.frame_id
+        #     pose_in_base_frame_stamped.header.stamp = transform.header.stamp
+        #     pose_in_base_frame_stamped.pose = transformed_pose
+
+        #     if self.is_graspable(transformed_pose):
+        #         self.get_logger().info(f"✅ Object ID {object_id} is graspable.")
+        #         base_frame_pose_stamped = PoseStamped()
+        #         base_frame_pose_stamped.header.frame_id = self.robot_base_frame
+        #         base_frame_pose_stamped.header.stamp = pose_in_base_frame_stamped.header.stamp
+        #         base_frame_pose_stamped.pose = transformed_pose
+
+        #         with self.state_lock:
+        #             self.target_grasp_pose = base_frame_pose_stamped
+        #         return
+        #     else:
+        #         self.get_logger().warning(
+        #             f"❌ Object ID {object_id} is NOT graspable (bad roll angle)."
+        #         )
+
+        # except TransformException as ex:
+        #     self.get_logger().error(
+        #         f"Could not transform pose for object {object_id}: {ex}"
+        #     )
     def process_and_transform_pose(self, object_id):
-        avg_pose = self.average_poses(self.object_samples[object_id])
+        # 1) Gather averaged pose safely
+        avg_pose = self.average_poses(self.object_samples.get(object_id, []))
         if not avg_pose:
+            self.get_logger().warning(f"[process] No averaged pose for object {object_id}; skipping")
             return
 
+        # 2) Re-stamp to now to avoid TF buffer extrapolation when robot is moving
+        avg_pose.header.stamp = self.get_clock().now().to_msg()
+
+        # 3) Lookup latest transform safely
         try:
-            # now = self.get_clock().now()
-            # transform = self.tf_buffer.lookup_transform(
-            #     self.robot_base_frame, avg_pose.header.frame_id, now
-            # )
-            requested_time = avg_pose.header.stamp  # keep your original time
-            tol = Duration(seconds=0.1)             # 100 ms tolerance
-            transform = self.tf_buffer.lookup_transform_full(
-                self.robot_base_frame,
-                rclpy.time.Time(),         # target time = latest
-                avg_pose.header.frame_id,
-                requested_time,
-                self.robot_base_frame,     # fixed frame
-                tol
+            transform = self._lookup_latest_transform(self.robot_base_frame, avg_pose.header.frame_id, timeout_s=0.5)
+        except Exception as ex:
+            self.get_logger().error(f"Could not get TF for object {object_id}: {ex}")
+            return
+
+        # 4) Build PoseStamped and perform the transform using tf2_geometry_msgs
+        try:
+            # build PoseStamped from avg_pose (avg_pose is a PoseStamped)
+            stamped_in_cam = PoseStamped()
+            stamped_in_cam.header = avg_pose.header
+            stamped_in_cam.pose = avg_pose.pose
+
+            # transform to base frame (returns PoseStamped)
+            transformed_stamped = do_transform_pose(stamped_in_cam, transform)
+
+            # extract Pose (geometry_msgs.msg.Pose) for downstream use
+            transformed_pose = transformed_stamped.pose
+
+            # debug logs (temporary)
+            self.get_logger().info(
+                f"transformed (base) x={transformed_pose.position.x:.3f} "
+                f"y={transformed_pose.position.y:.3f} z={transformed_pose.position.z:.3f}"
             )
 
-
-            stamped = PoseStamped()
-            stamped.header = avg_pose.header
-            stamped.pose = avg_pose.pose
-
-            transformed_pose = do_transform_pose(stamped.pose, transform)
-            pose_in_base_frame_stamped = PoseStamped()
-            pose_in_base_frame_stamped.header.frame_id = transform.header.frame_id
-            pose_in_base_frame_stamped.header.stamp = transform.header.stamp
-            pose_in_base_frame_stamped.pose = transformed_pose
-
+            # pass Pose (not PoseStamped) into is_graspable
             if self.is_graspable(transformed_pose):
                 self.get_logger().info(f"✅ Object ID {object_id} is graspable.")
                 base_frame_pose_stamped = PoseStamped()
                 base_frame_pose_stamped.header.frame_id = self.robot_base_frame
-                base_frame_pose_stamped.header.stamp = pose_in_base_frame_stamped.header.stamp
+                base_frame_pose_stamped.header.stamp = self.get_clock().now().to_msg()
                 base_frame_pose_stamped.pose = transformed_pose
 
                 with self.state_lock:
                     self.target_grasp_pose = base_frame_pose_stamped
                 return
             else:
-                self.get_logger().warning(
-                    f"❌ Object ID {object_id} is NOT graspable (bad roll angle)."
-                )
+                self.get_logger().warning(f"❌ Object ID {object_id} is NOT graspable (bad roll angle).")
 
-        except TransformException as ex:
-            self.get_logger().error(
-                f"Could not transform pose for object {object_id}: {ex}"
-            )
+        except Exception as ex:
+            self.get_logger().error(f"TF transform failed for object {object_id}: {ex}")
+            return
 
 
 
 
+
+    # def average_poses(self, poses):
+    #     if not poses: return None
+    #     avg_pose = PoseStamped()
+    #     avg_pose.header = poses[0].header
+    #     avg_pose.pose.position.x = sum(p.pose.position.x for p in poses) / len(poses)
+    #     avg_pose.pose.position.y = sum(p.pose.position.y for p in poses) / len(poses)
+    #     avg_pose.pose.position.z = sum(p.pose.position.z for p in poses) / len(poses)
+    #     quats = [[p.pose.orientation.x, p.pose.orientation.y, p.pose.orientation.z, p.pose.orientation.w] for p in poses]
+    #     avg_quat = R.from_quat(quats).mean().as_quat()
+    #     avg_pose.pose.orientation.x, avg_pose.pose.orientation.y, avg_pose.pose.orientation.z, avg_pose.pose.orientation.w = avg_quat
+    #     return avg_pose
     def average_poses(self, poses):
-        if not poses: return None
+        # Return None if no poses
+        if not poses:
+            return None
+
+        # Ensure we only average valid PoseStamped objects
+        valid = [p for p in poses if p is not None]
+        if not valid:
+            return None
+
+        n = len(valid)
+
+        # Average positions
+        avg_pos = np.zeros(3)
+        for p in valid:
+            avg_pos += np.array([p.pose.position.x, p.pose.position.y, p.pose.position.z])
+        avg_pos /= float(n)
+
+        # Collect quaternions and do a proper quaternion average using Rotation
+        quats = np.array([[p.pose.orientation.x,
+                           p.pose.orientation.y,
+                           p.pose.orientation.z,
+                           p.pose.orientation.w] for p in valid])
+
+        # Guard: if any quaternion is zero or NaN, skip averaging
+        if not np.isfinite(quats).all() or np.allclose(np.linalg.norm(quats, axis=1), 0.0):
+            return None
+
+        # Normalize input quaternions for stability
+        quats = quats / np.linalg.norm(quats, axis=1)[:, None]
+
+        # Use Rotation mean to compute average quaternion
+        try:
+            avg_quat = R.from_quat(quats).mean().as_quat()
+        except Exception:
+            # Fallback: simple eigenvector-based method (additive then normalize)
+            q = quats.sum(axis=0)
+            avg_quat = q / np.linalg.norm(q)
+
+        # Build PoseStamped result
         avg_pose = PoseStamped()
-        avg_pose.header = poses[0].header
-        avg_pose.pose.position.x = sum(p.pose.position.x for p in poses) / len(poses)
-        avg_pose.pose.position.y = sum(p.pose.position.y for p in poses) / len(poses)
-        avg_pose.pose.position.z = sum(p.pose.position.z for p in poses) / len(poses)
-        quats = [[p.pose.orientation.x, p.pose.orientation.y, p.pose.orientation.z, p.pose.orientation.w] for p in poses]
-        avg_quat = R.from_quat(quats).mean().as_quat()
-        avg_pose.pose.orientation.x, avg_pose.pose.orientation.y, avg_pose.pose.orientation.z, avg_pose.pose.orientation.w = avg_quat
+        # Use the most recent stamp to reduce TF extrapolation risk
+        avg_pose.header = valid[-1].header
+        avg_pose.pose.position.x, avg_pose.pose.position.y, avg_pose.pose.position.z = map(float, avg_pos)
+        avg_pose.pose.orientation.x = float(avg_quat[0])
+        avg_pose.pose.orientation.y = float(avg_quat[1])
+        avg_pose.pose.orientation.z = float(avg_quat[2])
+        avg_pose.pose.orientation.w = float(avg_quat[3])
+
         return avg_pose
 
-    def is_graspable(self, pose_msg):
-        q = pose_msg.orientation
+    def is_graspable(self, pose: 'geometry_msgs.msg.Pose') -> bool:
+        q = pose.orientation
         yaw, pitch, roll = R.from_quat([q.x, q.y, q.z, q.w]).as_euler('zyx', degrees=True)
         return abs(pitch) < 60 and abs(roll) < 45
+
+
+        self.get_logger().info(f"transformed_stamped type: {type(transformed_stamped)}")
+        self.get_logger().info(f"transformed_pose type: {type(transformed_pose)}")
+        self.get_logger().info(f"pose in base: x={transformed_pose.position.x:.3f} y={transformed_pose.position.y:.3f} z={transformed_pose.position.z:.3f}")
+
+
 
 
     def call_service(self, client, request, service_name, timeout=20.0):
@@ -395,8 +548,8 @@ def main(args=None):
     executor.add_node(node)
 
     # Run the setup in a separate thread.
-    setup_thread = Thread(target=node.run_setup_and_main_loop, daemon=True)
-    setup_thread.start()
+    # setup_thread = Thread(target=node.run_setup_and_main_loop, daemon=True)
+    # setup_thread.start()
 
     try:
         # Spin the executor instead of the node directly.

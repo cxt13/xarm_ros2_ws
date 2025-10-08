@@ -6,16 +6,18 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 
-def generate_launch_description():
     # 1) Static TF: end-effector → camera (from hand_eye_calibration.yaml)
+
+def generate_launch_description():
     static_tf_publisher = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
         name='static_camera_tf_publisher',
+        output='screen',
         arguments=[
             '0.06978035792908464', '0.035818571378670123', '0.01679021439600517',
             '-0.002053764557758081', '0.008549615327250404', '-0.7181193669041934', '0.6958643984326385',
-            'camera_color_optical_frame', 'link_eef'
+            'link_eef', 'camera_color_optical_frame'   # <-- parent then child
         ]
     )
 
