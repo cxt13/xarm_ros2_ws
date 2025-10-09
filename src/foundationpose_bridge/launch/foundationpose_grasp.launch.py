@@ -15,12 +15,12 @@ def generate_launch_description():
         name='static_camera_tf_publisher',
         output='screen',
         arguments=[
-            '0.06978035792908464', '0.035818571378670123', '0.01679021439600517',
-            '-0.002053764557758081', '0.008549615327250404', '-0.7181193669041934', '0.6958643984326385',
-            'link_eef', 'camera_color_optical_frame'   # <-- parent then child
+            '0.05282033646772982', '0.04386802728228572', '-0.0017735993904100513',
+            '-0.006035388725771069', '0.012037571533873415', '-0.7118858613870623', '0.7021660710342645',
+             'link_eef', 'camera_color_optical_frame' # ✅ parent → child
+
         ]
     )
-
     # 2) Robot IP argument for xArm driver
     robot_ip_arg = DeclareLaunchArgument(
         'robot_ip',

@@ -9,7 +9,7 @@ import time
 from rclpy.time import Time
 from tf2_ros import TransformException
 from tf2_geometry_msgs import do_transform_pose
-from geometry_msgs.msg import PoseStamped , PoseArray
+from geometry_msgs.msg import PoseStamped , PoseArray , Pose
 from xarm_msgs.srv import SetInt16, SetInt16ById, MoveCartesian
 from rclpy.action import ActionClient 
 from rclpy.duration import Duration
@@ -263,7 +263,7 @@ class FoundationPoseGraspBridge(Node):
 
         # 4) Build PoseStamped and perform the transform using tf2_geometry_msgs
         try:
-            # build PoseStamped from avg_pose (avg_pose is a PoseStamped)
+            # build PoseStamped from avg_pose (avg_pose is already a PoseStamped)
             stamped_in_cam = PoseStamped()
             stamped_in_cam.header = avg_pose.header
             stamped_in_cam.pose = avg_pose.pose
@@ -271,22 +271,43 @@ class FoundationPoseGraspBridge(Node):
             # transform to base frame (returns PoseStamped)
             transformed_stamped = do_transform_pose(stamped_in_cam, transform)
 
-            # extract Pose (geometry_msgs.msg.Pose) for downstream use
-            transformed_pose = transformed_stamped.pose
+            # DEBUG: show runtime type
+            self.get_logger().info(f"DEBUG: type(transformed_stamped) = {type(transformed_stamped)}")
 
-            # debug logs (temporary)
+            # normalize to a geometry_msgs.msg.Pose named `pose`
+            if isinstance(transformed_stamped, PoseStamped):
+                pose = transformed_stamped.pose
+            elif isinstance(transformed_stamped, Pose):
+                pose = transformed_stamped
+            else:
+                raise TypeError(f"Unexpected transform result type: {type(transformed_stamped)}")
+
+            # OPTIONAL: normalize quaternion to avoid downstream IK issues
+            qx = float(pose.orientation.x)
+            qy = float(pose.orientation.y)
+            qz = float(pose.orientation.z)
+            qw = float(pose.orientation.w)
+            norm = math.sqrt(qx*qx + qy*qy + qz*qz + qw*qw)
+            if norm == 0.0:
+                raise ValueError("Transformed quaternion has zero norm")
+            pose.orientation.x = qx / norm
+            pose.orientation.y = qy / norm
+            pose.orientation.z = qz / norm
+            pose.orientation.w = qw / norm
+
+            # safe logging and checks
             self.get_logger().info(
-                f"transformed (base) x={transformed_pose.position.x:.3f} "
-                f"y={transformed_pose.position.y:.3f} z={transformed_pose.position.z:.3f}"
+                f"transformed (base) x={pose.position.x:.3f} "
+                f"y={pose.position.y:.3f} z={pose.position.z:.3f}"
             )
 
             # pass Pose (not PoseStamped) into is_graspable
-            if self.is_graspable(transformed_pose):
+            if self.is_graspable(pose):
                 self.get_logger().info(f"✅ Object ID {object_id} is graspable.")
                 base_frame_pose_stamped = PoseStamped()
                 base_frame_pose_stamped.header.frame_id = self.robot_base_frame
                 base_frame_pose_stamped.header.stamp = self.get_clock().now().to_msg()
-                base_frame_pose_stamped.pose = transformed_pose
+                base_frame_pose_stamped.pose = pose
 
                 with self.state_lock:
                     self.target_grasp_pose = base_frame_pose_stamped
@@ -297,8 +318,6 @@ class FoundationPoseGraspBridge(Node):
         except Exception as ex:
             self.get_logger().error(f"TF transform failed for object {object_id}: {ex}")
             return
-
-
 
 
 
@@ -372,7 +391,9 @@ class FoundationPoseGraspBridge(Node):
 
         self.get_logger().info(f"transformed_stamped type: {type(transformed_stamped)}")
         self.get_logger().info(f"transformed_pose type: {type(transformed_pose)}")
-        self.get_logger().info(f"pose in base: x={transformed_pose.position.x:.3f} y={transformed_pose.position.y:.3f} z={transformed_pose.position.z:.3f}")
+        #self.get_logger().info(f"pose in base: x={pose.position.x:.3f} y={pose.position.y:.3f} z={pose.position.z:.3f}")
+        self.get_logger().info(f"pose in base: x={pose.position.x:.3f} y={pose.position.y:.3f} z={pose.position.z:.3f}")
+
 
 
 
